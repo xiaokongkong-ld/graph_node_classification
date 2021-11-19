@@ -228,6 +228,8 @@ class MessagePassing(torch.nn.Module):
                 aggregate messages, and to update node embeddings.
         """
 
+        print('INPUT EDGE_INDEX')
+        print(edge_index.shape)
         for hook in self._propagate_forward_pre_hooks.values():
             res = hook(self, (edge_index, size, kwargs))
             if res is not None:
