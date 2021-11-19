@@ -1,6 +1,7 @@
 import torch
 from torch.nn import Linear
-from torch_geometric.nn import GCNConv
+# from torch_geometric.nn import GCNConv
+from hgcn_conv import GCNConv
 import layers.hyp_layers_new as hyp_layers
 import numpy as np
 import torch
@@ -9,7 +10,7 @@ import torch.nn.functional as F
 import manifolds
 from layers.att_layers import GraphAttentionLayer
 from layers.layers import GraphConvolution, Linear, get_dim_act
-import utils.math_utils as pmath
+import utils_hpy.math_utils as pmath
 from layers.layers import GraphConvolution, Linear
 
 class MLP(torch.nn.Module):
@@ -52,7 +53,6 @@ class GCN(torch.nn.Module):
         x = self.conv2(x, edge_index)
         return x
 
-
 class HGCN(torch.nn.Module):
     """
     Hyperbolic-GCN.
@@ -61,31 +61,23 @@ class HGCN(torch.nn.Module):
     def __init__(self, c):
         super(HGCN, self).__init__()
         self.c = c
+        # self.manifold = getattr(manifolds, 'Euclidean')()
+        # self.manifold = getattr(manifolds, 'Hyperboloid')()
         self.manifold = getattr(manifolds, 'PoincareBall')()
-        hgc_layers = []
         act = getattr(F, 'relu')
         self.lin = Linear(64, 7, dropout=0.0, act=act, use_bias=True)
-        hgc_layers.append(
-            hyp_layers.HyperbolicGraphConvolution(
-                self.manifold, 1433, 100, 1, 1, 0.0, act, 1, 0, 0
-            )
-        )
-        hgc_layers.append(
-            hyp_layers.HyperbolicGraphConvolution(
-                self.manifold, 100, 64, 1, 1, 0.0, act, 1, 0, 0
-            )
-        )
-        self.layers = torch.nn.Sequential(*hgc_layers)
+        self.hgcov1 = hyp_layers.HyperbolicGraphConvolution(self.manifold, 1433, 100, 1, 1, 0.0, act, 1, 0, 0)
+        self.hgcov2 = hyp_layers.HyperbolicGraphConvolution(self.manifold, 100, 7, 1, 1, 0.0, act, 1, 0, 0)
         self.encode_graph = True
 
     def forward(self, x, adj):
         x_tan = self.manifold.proj_tan0(x, 1)
         x_hyp = self.manifold.expmap0(x_tan, 1)
         x_hyp = self.manifold.proj(x_hyp, 1)
-        input = (x_hyp, adj)
-        # x, _ = self.layers.forward(input)
-        x, _ = self.layers.forward(input)
-        h = self.manifold.proj_tan0(self.manifold.logmap0(x, c=self.c), c=self.c)
-        h = self.lin(h)
+        h = self.hgcov1.forward(x_hyp, adj)
+        h = self.hgcov2.forward(h, adj)
+
+        h = self.manifold.proj_tan0(self.manifold.logmap0(h, c=self.c), c=self.c)
+        # h = self.lin(h)
         return F.log_softmax(h)
         # return h

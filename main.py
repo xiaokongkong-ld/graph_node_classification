@@ -64,8 +64,8 @@ if __name__ == '__main__':
     # adj = dataset['adj_train_norm']
 
     # model = MLP(hidden_channels=16)
-    # model = GCN(hidden_channels=100)
-    model = HGCN(1)
+    model = GCN(hidden_channels=86)
+    # model = HGCN(1)
     print(model)
     criterion = torch.nn.CrossEntropyLoss()  # Define loss criterion.
     optimizer = torch.optim.Adam(model.parameters()
@@ -79,8 +79,8 @@ if __name__ == '__main__':
         optimizer.zero_grad()  # Clear gradients.
         out = model(
                       feat
-                    , adj=adj
-                    # , edge_index = edge_index_ori
+                    # , adj=adj
+                    , edge_index = edge_index_ori
                     )  # Perform a single forward pass.
         # out = model.encode(feat, adj)
         # print('pred:')
@@ -117,8 +117,8 @@ if __name__ == '__main__':
         model.eval()
         out = model(feat
                     # , edge_index
-                    # ,edge_index_ori
-                    ,adj
+                    ,edge_index_ori
+                    # ,adj
                     )
         # out = model.encode(feat, adj)
         pred = out.argmax(dim=1)  # Use the class with highest probability.
@@ -146,8 +146,8 @@ if __name__ == '__main__':
     model.eval()
 
     out = model(feat
-                # , edge_index_ori
-                , adj
+                , edge_index_ori
+                # , adj
                 )
     # out = model.encode(feat, adj)
     visualize(out, color=label)

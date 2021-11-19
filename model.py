@@ -9,7 +9,7 @@ import torch.nn.functional as F
 import manifolds
 from layers.att_layers import GraphAttentionLayer
 from layers.layers import GraphConvolution, Linear, get_dim_act
-import utils.math_utils as pmath
+import utils_hpy.math_utils as pmath
 from layers.layers import GraphConvolution, Linear
 
 class MLP(torch.nn.Module):

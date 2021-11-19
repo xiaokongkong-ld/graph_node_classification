@@ -11,7 +11,7 @@ import layers.hyp_layers as hyp_layers
 import manifolds
 import models.encoders as encoders
 from models.decoders import model2decoder
-from utils.eval_utils import acc_f1
+from utils_hpy.eval_utils import acc_f1
 
 
 class BaseModel(nn.Module):

@@ -20,13 +20,11 @@ class HyperbolicGraphConvolution(nn.Module):
         self.agg = HypAgg(manifold, c_in, out_features, dropout, use_att, local_agg)
         self.hyp_act = HypAct(manifold, c_in, c_out, act)
 
-    def forward(self, input):
-        x, adj = input
+    def forward(self, x, adj):
         h = self.linear.forward(x)
         h = self.agg.forward(h, adj)
         h = self.hyp_act.forward(h)
-        output = h, adj
-        return output
+        return h
 
 
 class HypLinear(nn.Module):
