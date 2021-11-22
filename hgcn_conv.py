@@ -1,7 +1,13 @@
+import math
+
+from torch_geometric.nn import inits
 from typing import Optional, Tuple
 from torch_geometric.typing import Adj, OptTensor, PairTensor
-
+import numpy as np
+import torch.nn.init as init
+import torch.nn as nn
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Parameter
 from torch_scatter import scatter_add
@@ -12,6 +18,7 @@ from torch_geometric.nn.dense.linear import Linear
 from hgcn_message_passing import MessagePassing
 from torch_geometric.utils import add_remaining_self_loops
 from torch_geometric.utils.num_nodes import maybe_num_nodes
+from torch.nn.modules.module import Module
 
 
 @torch.jit._overload
@@ -33,98 +40,40 @@ def gcn_norm(edge_index, edge_weight=None, num_nodes=None, improved=False,
 
     fill_value = 2. if improved else 1.
 
-    if isinstance(edge_index, SparseTensor):
-        adj_t = edge_index
-        if not adj_t.has_value():
-            adj_t = adj_t.fill_value(1., dtype=dtype)
-        if add_self_loops:
-            adj_t = fill_diag(adj_t, fill_value)
-        deg = sparsesum(adj_t, dim=1)
-        deg_inv_sqrt = deg.pow_(-0.5)
-        deg_inv_sqrt.masked_fill_(deg_inv_sqrt == float('inf'), 0.)
-        adj_t = mul(adj_t, deg_inv_sqrt.view(-1, 1))
-        adj_t = mul(adj_t, deg_inv_sqrt.view(1, -1))
-        return adj_t
+    num_nodes = maybe_num_nodes(edge_index, num_nodes)
 
-    else:
-        num_nodes = maybe_num_nodes(edge_index, num_nodes)
+    if edge_weight is None:
+        edge_weight = torch.ones((edge_index.size(1), ), dtype=dtype,
+                                    device=edge_index.device)
 
-        if edge_weight is None:
-            edge_weight = torch.ones((edge_index.size(1), ), dtype=dtype,
-                                     device=edge_index.device)
+    if add_self_loops:
+        edge_index, tmp_edge_weight = add_remaining_self_loops(
+            edge_index, edge_weight, fill_value, num_nodes)
+        assert tmp_edge_weight is not None
+        edge_weight = tmp_edge_weight
 
-        if add_self_loops:
-            edge_index, tmp_edge_weight = add_remaining_self_loops(
-                edge_index, edge_weight, fill_value, num_nodes)
-            assert tmp_edge_weight is not None
-            edge_weight = tmp_edge_weight
+    row, col = edge_index[0], edge_index[1]
+    deg = scatter_add(edge_weight, col, dim=0, dim_size=num_nodes)
+    deg_inv_sqrt = deg.pow_(-0.5)
+    deg_inv_sqrt.masked_fill_(deg_inv_sqrt == float('inf'), 0)
 
-        row, col = edge_index[0], edge_index[1]
-        deg = scatter_add(edge_weight, col, dim=0, dim_size=num_nodes)
-        deg_inv_sqrt = deg.pow_(-0.5)
-        deg_inv_sqrt.masked_fill_(deg_inv_sqrt == float('inf'), 0)
-        return edge_index, deg_inv_sqrt[row] * edge_weight * deg_inv_sqrt[col]
+    return edge_index, deg_inv_sqrt[row] * edge_weight * deg_inv_sqrt[col]
 
 
-class GCNConv(MessagePassing):
-    r"""The graph convolutional operator from the `"Semi-supervised
-    Classification with Graph Convolutional Networks"
-    <https://arxiv.org/abs/1609.02907>`_ paper
-
-    .. math::
-        \mathbf{X}^{\prime} = \mathbf{\hat{D}}^{-1/2} \mathbf{\hat{A}}
-        \mathbf{\hat{D}}^{-1/2} \mathbf{X} \mathbf{\Theta},
-
-    where :math:`\mathbf{\hat{A}} = \mathbf{A} + \mathbf{I}` denotes the
-    adjacency matrix with inserted self-loops and
-    :math:`\hat{D}_{ii} = \sum_{j=0} \hat{A}_{ij}` its diagonal degree matrix.
-    The adjacency matrix can include other values than :obj:`1` representing
-    edge weights via the optional :obj:`edge_weight` tensor.
-
-    Its node-wise formulation is given by:
-
-    .. math::
-        \mathbf{x}^{\prime}_i = \mathbf{\Theta} \sum_{j \in \mathcal{N}(v) \cup
-        \{ i \}} \frac{e_{j,i}}{\sqrt{\hat{d}_j \hat{d}_i}} \mathbf{x}_j
-
-    with :math:`\hat{d}_i = 1 + \sum_{j \in \mathcal{N}(i)} e_{j,i}`, where
-    :math:`e_{j,i}` denotes the edge weight from source node :obj:`j` to target
-    node :obj:`i` (default: :obj:`1.0`)
-
-    Args:
-        in_channels (int): Size of each input sample, or :obj:`-1` to derive
-            the size from the first input(s) to the forward method.
-        out_channels (int): Size of each output sample.
-        improved (bool, optional): If set to :obj:`True`, the layer computes
-            :math:`\mathbf{\hat{A}}` as :math:`\mathbf{A} + 2\mathbf{I}`.
-            (default: :obj:`False`)
-        cached (bool, optional): If set to :obj:`True`, the layer will cache
-            the computation of :math:`\mathbf{\hat{D}}^{-1/2} \mathbf{\hat{A}}
-            \mathbf{\hat{D}}^{-1/2}` on first execution, and will use the
-            cached version for further executions.
-            This parameter should only be set to :obj:`True` in transductive
-            learning scenarios. (default: :obj:`False`)
-        add_self_loops (bool, optional): If set to :obj:`False`, will not add
-            self-loops to the input graph. (default: :obj:`True`)
-        normalize (bool, optional): Whether to add self-loops and compute
-            symmetric normalization coefficients on the fly.
-            (default: :obj:`True`)
-        bias (bool, optional): If set to :obj:`False`, the layer will not learn
-            an additive bias. (default: :obj:`True`)
-        **kwargs (optional): Additional arguments of
-            :class:`torch_geometric.nn.conv.MessagePassing`.
-    """
+class HGCNConv(MessagePassing):
 
     _cached_edge_index: Optional[Tuple[Tensor, Tensor]]
     _cached_adj_t: Optional[SparseTensor]
 
-    def __init__(self, in_channels: int, out_channels: int,
+    def __init__(self, manifold, in_channels: int, out_channels: int, c,
                  improved: bool = False, cached: bool = False,
                  add_self_loops: bool = True, normalize: bool = True,
                  bias: bool = True, **kwargs):
 
         kwargs.setdefault('aggr', 'add')
-        super(GCNConv, self).__init__(**kwargs)
+        super(HGCNConv, self).__init__(**kwargs)
+        self.manifold = manifold
+        self.c = c
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -137,7 +86,8 @@ class GCNConv(MessagePassing):
         self._cached_adj_t = None
 
         self.lin = Linear(in_channels, out_channels, bias=False,
-                          weight_initializer='glorot')
+                          weight_initializer='kaiming_uniform')
+        self.lin_hyp = HypLinear(self.manifold, self.in_channels, self.out_channels, self.c, 0.5, bias)
 
         if bias:
             self.bias = Parameter(torch.Tensor(out_channels))
@@ -147,7 +97,8 @@ class GCNConv(MessagePassing):
         self.reset_parameters()
 
     def reset_parameters(self):
-        self.lin.reset_parameters()
+        # self.lin.reset_parameters()
+        self.lin_hyp.reset_parameters()
         zeros(self.bias)
         self._cached_edge_index = None
         self._cached_adj_t = None
@@ -157,29 +108,22 @@ class GCNConv(MessagePassing):
         """"""
 
         if self.normalize:
-            if isinstance(edge_index, Tensor):
-                cache = self._cached_edge_index
-                if cache is None:
-                    edge_index, edge_weight = gcn_norm(  # yapf: disable
+            cache = self._cached_edge_index
+            if cache is None:
+                edge_index, edge_weight = gcn_norm(  # yapf: disable
                         edge_index, edge_weight, x.size(self.node_dim),
                         self.improved, self.add_self_loops)
-                    if self.cached:
-                        self._cached_edge_index = (edge_index, edge_weight)
-                else:
-                    edge_index, edge_weight = cache[0], cache[1]
+                if self.cached:
+                    self._cached_edge_index = (edge_index, edge_weight)
+            else:
+                edge_index, edge_weight = cache[0], cache[1]
 
-            elif isinstance(edge_index, SparseTensor):
-                cache = self._cached_adj_t
-                if cache is None:
-                    edge_index = gcn_norm(  # yapf: disable
-                        edge_index, edge_weight, x.size(self.node_dim),
-                        self.improved, self.add_self_loops)
-                    if self.cached:
-                        self._cached_adj_t = edge_index
-                else:
-                    edge_index = cache
+        x = self.manifold.proj_tan0(x, self.c)
+        x = self.manifold.expmap0(x, self.c)
+        x = self.manifold.proj(x, self.c)
 
-        x = self.lin(x)
+        # x = self.lin(x)
+        x = self.lin_hyp(x)
 
         # propagate_type: (x: Tensor, edge_weight: OptTensor)
         out = self.propagate(edge_index, x=x, edge_weight=edge_weight,
@@ -191,20 +135,79 @@ class GCNConv(MessagePassing):
         return out
 
     def message(self, x_j: Tensor, edge_weight: OptTensor) -> Tensor:
-        print('x_j shape:')
-        print(x_j.shape)
-        print('edge weight:')
-        print(edge_weight.shape)
 
         if edge_weight is None:
             out = x_j
         else:
-            print('edge weight view:')
-            print(edge_weight.view(-1, 1))
-            print('...................')
             out = edge_weight.view(-1, 1) * x_j
         return out
 
     def __repr__(self):
         return '{}({}, {})'.format(self.__class__.__name__, self.in_channels,
                                    self.out_channels)
+class HypLinear(nn.Module):
+    """
+    Hyperbolic linear layer.
+    """
+
+    def __init__(self, manifold, in_features, out_features, c, dropout, use_bias):
+        super(HypLinear, self).__init__()
+        self.manifold = manifold
+        self.in_features = in_features
+        self.out_features = out_features
+        self.c = c
+        self.dropout = dropout
+        self.use_bias = use_bias
+        self.bias = nn.Parameter(torch.Tensor(out_features))
+        self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        # bound = 1.0 / math.sqrt(self.weight.size(-1))
+        # init.uniform_(self.weight.data, -bound, bound)
+        # init.xavier_uniform_(self.weight, gain=math.sqrt(2))
+        inits.glorot(self.weight)
+        # inits.kaiming_uniform(self.weight, fan=self.in_features, a=math.sqrt(5))
+        init.constant_(self.bias, 0)
+
+    def forward(self, x):
+        # print('===============================self.weight======================================')
+        # print(self.weight.shape)
+        # drop_weight = F.dropout(self.weight, self.dropout, training=self.training)
+        # print(drop_weight.shape)
+        # mv = self.manifold.mobius_matvec(drop_weight, x, self.c)
+        mv = self.manifold.mobius_matvec(self.weight, x, self.c)
+        res = self.manifold.proj(mv, self.c)
+        if self.use_bias:
+            bias = self.manifold.proj_tan0(self.bias.view(1, -1), self.c)
+            hyp_bias = self.manifold.expmap0(bias, self.c)
+            hyp_bias = self.manifold.proj(hyp_bias, self.c)
+            res = self.manifold.mobius_add(res, hyp_bias, c=self.c)
+            res = self.manifold.proj(res, self.c)
+        return res
+
+    def extra_repr(self):
+        return 'in_features={}, out_features={}, c={}'.format(
+            self.in_features, self.out_features, self.c
+        )
+
+class HypAct(Module):
+    """
+    Hyperbolic activation layer.
+    """
+
+    def __init__(self, manifold, c, act):
+        super(HypAct, self).__init__()
+        self.manifold = manifold
+        self.c = c
+        self.act = act
+
+    def forward(self, x):
+        xt = self.act(self.manifold.logmap0(x, c=self.c))
+        xt = self.manifold.proj_tan0(xt, c=self.c)
+        return self.manifold.proj(self.manifold.expmap0(xt, c=self.c), c=self.c)
+
+    def extra_repr(self):
+        return 'c_in={}, c_out={}'.format(
+            self.c, self.c
+        )

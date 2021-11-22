@@ -6,7 +6,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 from torch.nn.modules.module import Module
-
+import numpy as np
+from warnings import simplefilter
+simplefilter(action='ignore', category=UserWarning)
+simplefilter(action='ignore', category=FutureWarning)
 from layers.att_layers import DenseAtt
 
 class HyperbolicGraphConvolution(nn.Module):
@@ -21,6 +24,7 @@ class HyperbolicGraphConvolution(nn.Module):
         self.hyp_act = HypAct(manifold, c_in, c_out, act)
 
     def forward(self, x, adj):
+
         h = self.linear.forward(x)
         h = self.agg.forward(h, adj)
         h = self.hyp_act.forward(h)
@@ -84,24 +88,13 @@ class HypAgg(Module):
             self.att = DenseAtt(in_features, dropout)
 
     def forward(self, x, adj):
+        # x: 2708*7
+        # print(x)
         x_tangent = self.manifold.logmap0(x, c=self.c)
-        if self.use_att:
-            if self.local_agg:
-                x_local_tangent = []
-                for i in range(x.size(0)):
-                    x_local_tangent.append(self.manifold.logmap(x[i], x, c=self.c))
-                x_local_tangent = torch.stack(x_local_tangent, dim=0)
-                adj_att = self.att(x_tangent, adj)
-                att_rep = adj_att.unsqueeze(-1) * x_local_tangent
-                support_t = torch.sum(adj_att.unsqueeze(-1) * x_local_tangent, dim=1)
-                output = self.manifold.proj(self.manifold.expmap(x, support_t, c=self.c), c=self.c)
-                return output
-            else:
-                adj_att = self.att(x_tangent, adj)
-                support_t = torch.matmul(adj_att, x_tangent)
-        else:
-            support_t = torch.spmm(adj, x_tangent)
+        support_t = torch.spmm(adj, x_tangent)  # adj: 2708*2708, x_tangent: 2708*7, support_t: 2708*7
         output = self.manifold.proj(self.manifold.expmap0(support_t, c=self.c), c=self.c)
+        # print(output)
+        # output: 2708*7
         return output
 
     def extra_repr(self):

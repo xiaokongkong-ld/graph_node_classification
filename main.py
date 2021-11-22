@@ -9,6 +9,9 @@ import networkx as nx
 import numpy as np
 import scipy.sparse as sp
 from data_process import sparse_mx_to_torch_sparse_tensor,process
+from warnings import simplefilter
+simplefilter(action='ignore', category=UserWarning)
+simplefilter(action='ignore', category=FutureWarning)
 
 
 # Press the green button in the gutter to run the script.
@@ -19,19 +22,22 @@ if __name__ == '__main__':
     datapath = 'data/Planetoid/Cora'
     # graph = dataset.graph
     feat = dataset.x.numpy()
+
+    # print('.................................................................................................')
+    # print(feat)
     label = dataset.y
     train_mask = dataset.train_mask
-    print(feat.shape)
-    print(len(train_mask))
-    print('train mask####################################')
-    print(train_mask)
+    # print(feat.shape)
+    # print(len(train_mask))
+    # print('train mask####################################')
+    # print(train_mask)
     test_mask = dataset.test_mask
-    print('test mask########################################')
-    print(test_mask)
-    print(len(test_mask))
+    # print('test mask########################################')
+    # print(test_mask)
+    # print(len(test_mask))
     edge_index_ori = dataset.edge_index
     edge_index = dataset.edge_index.numpy().T
-    print(edge_index.shape)
+    # print(edge_index.shape)
     leng = len(label)
     adj = np.zeros((leng, leng))
     print(adj.shape)
@@ -64,8 +70,8 @@ if __name__ == '__main__':
     # adj = dataset['adj_train_norm']
 
     # model = MLP(hidden_channels=16)
-    model = GCN(hidden_channels=86)
-    # model = HGCN(1)
+    # model = GCN(hidden_channels=86)
+    model = HGCN(1)
     print(model)
     criterion = torch.nn.CrossEntropyLoss()  # Define loss criterion.
     optimizer = torch.optim.Adam(model.parameters()
@@ -77,11 +83,14 @@ if __name__ == '__main__':
     def train():
         model.train()
         optimizer.zero_grad()  # Clear gradients.
+
         out = model(
                       feat
-                    # , adj=adj
-                    , edge_index = edge_index_ori
+                    , adj=adj
+                    # , edge_index = edge_index_ori
                     )  # Perform a single forward pass.
+        # print('........................')
+        # print(feat.shape)
         # out = model.encode(feat, adj)
         # print('pred:')
         # print(out[idtrain])
@@ -104,21 +113,21 @@ if __name__ == '__main__':
         # Derive ratio of correct predictions.
         # train_acc = int(train_correct.sum()) / int(len(train_mask))
         train_acc = int(train_correct.sum()) / int(train_mask.sum())
-        print(f'train acc: {train_acc}')
+        # print(f'train acc: {train_acc}')
         loss = criterion(
                          out[train_mask],
                          label[train_mask]
                         )  # Compute the loss solely based on the training nodes.
         loss.backward()  # Derive gradients.
         optimizer.step()  # Update parameters based on gradients.
-        return loss
+        return loss, train_acc
 
     def test():
         model.eval()
         out = model(feat
                     # , edge_index
-                    ,edge_index_ori
-                    # ,adj
+                    # ,edge_index_ori
+                    ,adj
                     )
         # out = model.encode(feat, adj)
         pred = out.argmax(dim=1)  # Use the class with highest probability.
@@ -136,9 +145,9 @@ if __name__ == '__main__':
         return test_acc
 
 
-    for epoch in range(1, 501):
-        loss = train()
-        print(f'Epoch: {epoch:03d}, Loss: {loss:.4f}')
+    for epoch in range(1, 1001):
+        loss, train_acc = train()
+        print(f'Epoch: {epoch:03d}, Loss: {loss:.4f}, Train Accuracy: {train_acc:.4f}')
 
     test_acc = test()
     print(f'Test Accuracy: {test_acc:.4f}')
@@ -146,8 +155,8 @@ if __name__ == '__main__':
     model.eval()
 
     out = model(feat
-                , edge_index_ori
-                # , adj
+                # , edge_index_ori
+                , adj
                 )
     # out = model.encode(feat, adj)
     visualize(out, color=label)

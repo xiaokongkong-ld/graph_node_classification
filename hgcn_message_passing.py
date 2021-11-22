@@ -1,6 +1,7 @@
 from typing import List, Optional, Set, Callable, get_type_hints
 from torch_geometric.typing import Adj, Size
 
+import numpy as np
 import os
 import re
 import inspect
@@ -25,30 +26,6 @@ from torch_geometric.nn.conv.utils.inspector import Inspector, func_header_repr,
 
 
 class MessagePassing(torch.nn.Module):
-    r"""Base class for creating message passing layers of the form
-
-    .. math::
-        \mathbf{x}_i^{\prime} = \gamma_{\mathbf{\Theta}} \left( \mathbf{x}_i,
-        \square_{j \in \mathcal{N}(i)} \, \phi_{\mathbf{\Theta}}
-        \left(\mathbf{x}_i, \mathbf{x}_j,\mathbf{e}_{j,i}\right) \right),
-
-    where :math:`\square` denotes a differentiable, permutation invariant
-    function, *e.g.*, sum, mean or max, and :math:`\gamma_{\mathbf{\Theta}}`
-    and :math:`\phi_{\mathbf{\Theta}}` denote differentiable functions such as
-    MLPs.
-    See `here <https://pytorch-geometric.readthedocs.io/en/latest/notes/
-    create_gnn.html>`__ for the accompanying tutorial.
-
-    Args:
-        aggr (string, optional): The aggregation scheme to use
-            (:obj:`"add"`, :obj:`"mean"`, :obj:`"max"` or :obj:`None`).
-            (default: :obj:`"add"`)
-        flow (string, optional): The flow direction of message passing
-            (:obj:`"source_to_target"` or :obj:`"target_to_source"`).
-            (default: :obj:`"source_to_target"`)
-        node_dim (int, optional): The axis along which to propagate.
-            (default: :obj:`-2`)
-    """
 
     special_args: Set[str] = {
         'edge_index', 'adj_t', 'edge_index_i', 'edge_index_j', 'size',
@@ -198,39 +175,11 @@ class MessagePassing(torch.nn.Module):
         return out
 
     def propagate(self, edge_index: Adj, size: Size = None, **kwargs):
-        r"""The initial call to start propagating messages.
 
-        Args:
-            edge_index (Tensor or SparseTensor): A :obj:`torch.LongTensor` or a
-                :obj:`torch_sparse.SparseTensor` that defines the underlying
-                graph connectivity/message passing flow.
-                :obj:`edge_index` holds the indices of a general (sparse)
-                assignment matrix of shape :obj:`[N, M]`.
-                If :obj:`edge_index` is of type :obj:`torch.LongTensor`, its
-                shape must be defined as :obj:`[2, num_messages]`, where
-                messages from nodes in :obj:`edge_index[0]` are sent to
-                nodes in :obj:`edge_index[1]`
-                (in case :obj:`flow="source_to_target"`).
-                If :obj:`edge_index` is of type
-                :obj:`torch_sparse.SparseTensor`, its sparse indices
-                :obj:`(row, col)` should relate to :obj:`row = edge_index[1]`
-                and :obj:`col = edge_index[0]`.
-                The major difference between both formats is that we need to
-                input the *transposed* sparse adjacency matrix into
-                :func:`propagate`.
-            size (tuple, optional): The size :obj:`(N, M)` of the assignment
-                matrix in case :obj:`edge_index` is a :obj:`LongTensor`.
-                If set to :obj:`None`, the size will be automatically inferred
-                and assumed to be quadratic.
-                This argument is ignored in case :obj:`edge_index` is a
-                :obj:`torch_sparse.SparseTensor`. (default: :obj:`None`)
-            **kwargs: Any additional data which is needed to construct and
-                aggregate messages, and to update node embeddings.
-        """
+        kwargs['x'] = self.manifold.logmap0(kwargs['x'], c=self.c)
 
-        print('INPUT EDGE_INDEX')
-        print(edge_index.shape)
         for hook in self._propagate_forward_pre_hooks.values():
+            # print(kwargs)
             res = hook(self, (edge_index, size, kwargs))
             if res is not None:
                 edge_index, size, kwargs = res
@@ -241,16 +190,14 @@ class MessagePassing(torch.nn.Module):
                                          kwargs)
 
         msg_kwargs = self.inspector.distribute('message', coll_dict)
+
         for hook in self._message_forward_pre_hooks.values():
             res = hook(self, (msg_kwargs, ))
             if res is not None:
                 msg_kwargs = res[0] if isinstance(res, tuple) else res
-        ######################################################################################################
-        print('message IN:')
-        print(msg_kwargs['x_j'].shape)
-        out = self.message(**msg_kwargs)
-        print('message OUT:')
-        print(out.shape)
+
+        out = self.message(**msg_kwargs) # function message: x_j * edge_weight
+
         for hook in self._message_forward_hooks.values():
             res = hook(self, (msg_kwargs, ), out)
             if res is not None:
@@ -275,12 +222,11 @@ class MessagePassing(torch.nn.Module):
             res = hook(self, (aggr_kwargs, ))
             if res is not None:
                 aggr_kwargs = res[0] if isinstance(res, tuple) else res
-        ##################################################################################################
-        print('aggregate INPUT:')
-        print(out[6])
+
         out = self.aggregate(out, **aggr_kwargs)
-        print('aggregate OUT:')
-        print(out.shape)
+
+        out = self.manifold.proj(self.manifold.expmap0(out, c=self.c), c=self.c)
+
         for hook in self._aggregate_forward_hooks.values():
             res = hook(self, (aggr_kwargs, ), out)
             if res is not None:
@@ -297,30 +243,13 @@ class MessagePassing(torch.nn.Module):
         return out
 
     def message(self, x_j: Tensor) -> Tensor:
-        r"""Constructs messages from node :math:`j` to node :math:`i`
-        in analogy to :math:`\phi_{\mathbf{\Theta}}` for each edge in
-        :obj:`edge_index`.
-        This function can take any argument as input which was initially
-        passed to :meth:`propagate`.
-        Furthermore, tensors passed to :meth:`propagate` can be mapped to the
-        respective nodes :math:`i` and :math:`j` by appending :obj:`_i` or
-        :obj:`_j` to the variable name, *.e.g.* :obj:`x_i` and :obj:`x_j`.
-        """
+
         return x_j
 
     def aggregate(self, inputs: Tensor, index: Tensor,
                   ptr: Optional[Tensor] = None,
                   dim_size: Optional[int] = None) -> Tensor:
-        r"""Aggregates messages from neighbors as
-        :math:`\square_{j \in \mathcal{N}(i)}`.
 
-        Takes in the output of message computation as first argument and any
-        argument which was initially passed to :meth:`propagate`.
-
-        By default, this function will delegate its call to scatter functions
-        that support "add", "mean" and "max" operations as specified in
-        :meth:`__init__` by the :obj:`aggr` argument.
-        """
         if ptr is not None:
             ptr = expand_left(ptr, dim=self.node_dim, dims=inputs.dim())
             return segment_csr(inputs, ptr, reduce=self.aggr)
@@ -339,43 +268,14 @@ class MessagePassing(torch.nn.Module):
 
     def register_propagate_forward_pre_hook(self,
                                             hook: Callable) -> RemovableHandle:
-        r"""Registers a forward pre-hook on the module.
-        The hook will be called every time before :meth:`propagate` is invoked.
-        It should have the following signature:
 
-        .. code-block:: python
-
-            hook(module, inputs) -> None or modified input
-
-        The hook can modify the input.
-        Input keyword arguments are passed to the hook as a dictionary in
-        :obj:`inputs[-1]`.
-
-        Returns a :class:`torch.utils.hooks.RemovableHandle` that can be used
-        to remove the added hook by calling :obj:`handle.remove()`.
-        """
         handle = RemovableHandle(self._propagate_forward_pre_hooks)
         self._propagate_forward_pre_hooks[handle.id] = hook
         return handle
 
     def register_propagate_forward_hook(self,
                                         hook: Callable) -> RemovableHandle:
-        r"""Registers a forward hook on the module.
-        The hook will be called every time after :meth:`propagate` has computed
-        an output.
-        It should have the following signature:
 
-        .. code-block:: python
-
-            hook(module, inputs, output) -> None or modified output
-
-        The hook can modify the output.
-        Input keyword arguments are passed to the hook as a dictionary in
-        :obj:`inputs[-1]`.
-
-        Returns a :class:`torch.utils.hooks.RemovableHandle` that can be used
-        to remove the added hook by calling :obj:`handle.remove()`.
-        """
         handle = RemovableHandle(self._propagate_forward_hooks)
         self._propagate_forward_hooks[handle.id] = hook
         return handle
